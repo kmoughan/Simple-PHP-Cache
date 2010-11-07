@@ -3,22 +3,36 @@
 class simple_php_cache {
 
     protected $_options = array(
-        'num_directory_levels' => 1,    // Number of sub directories to use for storing cached files
-        'filename_prefix' => '',         // Prefix to add to all stored files
-        'umask_dir' => '0700',               // Umask used for permissions on sub-directories
-        'umask_file' => '0666',              // Umask used for permissions on cache files
-        'gzip_level' => '1'                 // Level of gzip compression to use, 0 for no gzip
+        'num_directory_levels' => 1,        // Number of sub directories to use for storing cached files
+        'filename_prefix' => '',            // Prefix to add to all stored files
+        'umask_dir' => '0700',              // Umask used for permissions on sub-directories
+        'umask_file' => '0666',             // Umask used for permissions on cache files
+        'gzip_level' => '0',                // Level of gzip compression to use, 0 for no gzip
+        'serialize_method' => 'json'        // Either json or serialize, json is faster but more limited, see notes
     );
 
 
+    /**
+     * Initialise the class
+     *
+     * @param  string  $cache_dir  Root path to the cache directory
+     * @return void
+     */
     public function __construct($cache_dir) {
         $this->_options['cache_dir'] = $cache_dir;
     }
 
 
+    /**
+     * Serialize and add data to cache
+     *
+     * @param  array   $data  Data to be cached
+     * @param  string  $filename  Name of cache file
+     * @return bool    Status
+     */
     public function save($data, $filename) {
         clearstatcache();
-        $path = $this->_path($filename);
+        $path = $this->_gen_path($filename);
         $file = $this->_full_file_path($filename);
         if ($this->_options['num_directory_levels'] > 0) {
             if (!is_writable($path)) {
@@ -31,23 +45,35 @@ class simple_php_cache {
             }
         }
 
-        if ($this->_options['gzip_level'] > 0) $res = @file_put_contents($file, gzdeflate(json_encode($data), $this->_options['gzip_level']));   // JSON & gzip
-        else $res = @file_put_contents($file, json_encode($data));  // JSON Only
+        if ($this->_options['gzip_level'] > 0) $res = @file_put_contents($file, gzdeflate($this->_serialize($data), $this->_options['gzip_level']));   // Serialize & gzip
+        else $res = @file_put_contents($file, $this->_serialize($data));  // Serialize Only
         if ($res) @chmod($file, $this->_options['umask_file']);
         return $res;
     }
 
 
+    /**
+     * Retrieve data from the cache
+     *
+     * @param  string   $filename   The filename to retrieve
+     * @return array
+     */
     public function load($filename) {
         $file = $this->_full_file_path($filename);
         //$data = $this->_fileGetContents($file);
         $data = file_get_contents($file);
         if ($this->_options['gzip_level'] > 0) $data = gzinflate($data);
-        return json_decode($data, true);
+        return $this->_unserialize($data);
     }
 
 
-    // Remove a cache file
+
+    /**
+     * Remove a cache file
+     *
+     * @param  string   $filename   Cache filename to remove
+     * @return bool     Status
+     */
     public function remove($filename) {
         $result = true;
         $file = $this->_full_file_path($filename);
@@ -58,6 +84,12 @@ class simple_php_cache {
     }
 
 
+    /**
+     * Empty the entire cache directory
+     *
+     * @param  string   $dir    Directory path to empty, defaults to cache_dir on first iteration
+     * @return void
+     */
     public function clear($dir = null) {
         if (!$dir) $dir = $this->_options['cache_dir'];
         if ($dh = opendir($dir)) {
@@ -79,15 +111,26 @@ class simple_php_cache {
     }
 
 
-    /****************************************************
-    ***********    SUPPORT FUNCTIONS *******************/
 
-    // Make the directory strucuture for the given filename
+
+
+    /********************    SUPPORT FUNCTIONS *******************/
+
+
+
+
+
+    /**
+     * Create the directory strucuture for the given filename
+     *
+     * @param  string   $filename   Filename
+     * @return bool     Status
+     */
     private function _create_sub_dir_structure($filename) {
         if ($this->_options['num_directory_levels'] <=0) {
             return true;
         }
-        $pathbits = $this->_path($filename, true);
+        $pathbits = $this->_gen_path($filename, true);
         foreach ($pathbits as $part) {
         	if (!is_dir($part)) {
             	@mkdir($part, $this->_options['umask_dir']);
@@ -98,15 +141,25 @@ class simple_php_cache {
     }
 
 
-    // Make and return a file name (with path)
+    /**
+     * Compute the full hashed file path for $filename
+     *
+     * @param  string   $filename   Filename
+     * @return string   Computed filepath including the original filename
+     */
     private function _full_file_path($filename) {
-        $path = $this->_path($filename);
-        return $path . $this->_options['filename_prefix'] . $filename;
+        return $this->_gen_path($filename) . $this->_options['filename_prefix'] . $filename;
     }
 
 
-    // Return the complete directory path of a filename
-    private function _path($filename, $rtn_parts = false) {
+    /**
+     * Generate/Compute the cache file path for the specified filename
+     *
+     * @param  string   $filename   Filename
+     * @param  bool     $rtn_parts  Whether to return path string or an array or path parts
+     * @return mixed
+     */
+    private function _gen_path($filename, $rtn_parts = false) {
         $pathbits = array();
         $cache_dir = $this->_options['cache_dir'];
         if ($this->_options['num_directory_levels']>0) {
@@ -124,4 +177,35 @@ class simple_php_cache {
         }
     }
 
+
+    /**
+     * Serialize the data according to defined options
+     *
+     * @param  array    $data   Data to serialize
+     * @return string   Serialized data string
+     */
+    private function _serialize($data) {
+        if ($this->_options['serialize_method'] == 'json') {
+            return json_encode($data);
+        }
+        else {
+            return serialize($data);
+        }
+    }
+
+
+    /**
+     * Unserialize the data according to defined options
+     *
+     * @param  string   $data   String to be unserialized
+     * @return array    Unserialized data
+     */
+    private function _unserialize($data) {
+        if ($this->_options['serialize_method'] == 'json') {
+            return json_decode($data, true);
+        }
+        else {
+            return unserialize($data);
+        }
+    }
 }
